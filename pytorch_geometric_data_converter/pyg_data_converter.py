@@ -1,0 +1,183 @@
+import torch
+import torch_geometric
+from networkx.algorithms.clique import node_clique_number
+from torch_geometric.data import Data, Dataset
+from sklearn.preprocessing import LabelEncoder
+import numpy as np
+import networkx as nx
+import pickle
+import os
+import time
+from concurrent.futures import ProcessPoolExecutor
+
+# Function to convert a single file to PyG format
+def process_pyg_file(source_file_path, dest_file_path, node_label_encoder, edge_label_encoder):
+    pyg_data = convert_graph_to_pyg(source_file_path, node_label_encoder, edge_label_encoder)
+    torch.save(pyg_data, dest_file_path)
+
+
+def convert_directory_to_pyg_data(input_path, output_path, num_subprocesses=4, generate_new_encodings=True):
+    # Generate encodings for nodes and edges
+    node_labels, edge_labels = generate_encodings(input_path, output_path, num_subprocesses=num_subprocesses, overwrite=generate_new_encodings)
+
+    node_label_encoder = {label: idx for idx, label in enumerate(set(node_labels))}
+    edge_label_encoder = {label: idx for idx, label in enumerate(set(edge_labels))}
+
+    print(f"Encoder Generated! Now generating graph files...")
+
+    start = time.time()
+    files_completed = 0
+    file_list = []
+
+
+    # Collect all files in the input directory
+    for root, dirs, files in os.walk(input_path):
+        dest_dir = root.replace(input_path, output_path, 1)
+        if not os.path.exists(dest_dir):
+            os.makedirs(dest_dir)
+
+        for file in files:
+            source_file_path = os.path.join(root, file)
+            dest_file_path = os.path.join(dest_dir, file)
+            file_list.append((source_file_path, dest_file_path))
+
+    def report_progress(future):
+        nonlocal files_completed
+        files_completed += 1
+        avg_time = (time.time() - start) / files_completed
+        if files_completed % 10000 == 0:
+            print(f'Files Completed: {files_completed}\n Avg. Time Taken: {avg_time:.2f} s')
+
+    # Use ProcessPoolExecutor to parallelize file conversion
+    with ProcessPoolExecutor(max_workers=num_subprocesses) as executor:
+        futures = []
+        for source_file_path, dest_file_path in file_list:
+            future = executor.submit(process_pyg_file, source_file_path, dest_file_path, node_label_encoder,
+                                     edge_label_encoder)
+            future.add_done_callback(report_progress)
+            futures.append(future)
+
+        for future in futures:
+            future.result()
+
+    print("Completed conversion of all graph files to PyG format.")
+
+
+def convert_graph_to_pyg(file_name, node_label_encoder, edge_label_encoder):
+    nx_graph = get_graph(file_name)
+    nx_graph = nx_graph.to_undirected()
+
+    # Create a node mapping (remap old node indices to new ones, starting from 0)
+    node_map = {old_idx: new_idx for new_idx, old_idx in enumerate(nx_graph.nodes())}
+
+    node_features = [node_label_encoder[nx_graph.nodes[old_idx]['label']] for old_idx in nx_graph.nodes()]
+
+    # Remap the edges based on the new node indices
+    edge_tuples = [(node_map[u], node_map[v]) for u, v in nx_graph.edges()]
+
+    # Extract and encode edge labels
+    edge_labels = [nx_graph.edges[edge]['label'] for edge in nx_graph.edges]  # Edge labels
+    edge_features = [edge_label_encoder[label] for label in edge_labels]
+
+    # Convert edge_index and edge attributes to tensors
+    edge_index = torch.tensor(edge_tuples, dtype=torch.long).t().contiguous()  # Shape [2, num_edges]
+    edge_attr = torch.tensor(edge_features, dtype=torch.long).contiguous()  # Shape [num_edges, ...]
+
+    # Convert node features to tensor
+    node_features_tensor = torch.tensor(node_features, dtype=torch.long).unsqueeze(1)
+
+    # Create PyG data object
+    pyg_data = Data(
+        x=node_features_tensor,
+        edge_index=edge_index,  # [2, num_edges]
+        edge_attr=edge_attr,  # edge labels/features
+    )
+
+    return pyg_data
+
+
+def process_files_chunk(file_list):
+    node_labels = []
+    edge_labels = []
+
+    for source_file_path in file_list:
+        file_graph = get_graph(source_file_path)
+
+        # Collect node labels
+        node_labels.extend([file_graph.nodes[node]['label'] for node in file_graph.nodes])
+
+        # Collect edge labels
+        edge_labels.extend([file_graph.edges[edge]['label'] for edge in file_graph.edges])
+
+    return node_labels, edge_labels
+
+
+# Parallelized encoding generation
+def generate_encodings(input_path, output_path, num_subprocesses=4, overwrite=False):
+    node_labels = []
+    edge_labels = []
+
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    file_name_node = 'reduced_encoded_node_labels.pkl'
+    file_name_edge = 'reduced_encoded_edge_labels.pkl'
+    node_path = os.path.join(current_dir, file_name_node)
+    edge_path = os.path.join(current_dir, file_name_edge)
+
+    # Check if previously generated encodings are available
+    if os.path.exists(node_path) and os.path.exists(edge_path):
+        with open(node_path, 'rb') as f:
+            node_labels = pickle.load(f)
+        with open(edge_path, 'rb') as f:
+            edge_labels = pickle.load(f)
+        print(f'Encodings Found in Files!')
+        return node_labels, edge_labels
+
+    # If no encodings exist, start generating them
+    file_list = []
+
+    # Collect all files from the input directory
+    for root, dirs, files in os.walk(input_path):
+        for file in files:
+            source_file_path = os.path.join(root, file)
+            file_list.append(source_file_path)
+
+    # Split file_list into chunks for parallel processing
+    chunk_size = len(file_list) // num_subprocesses
+    file_chunks = [file_list[i:i + chunk_size] for i in range(0, len(file_list), chunk_size)]
+
+    # Use ProcessPoolExecutor to parallelize node and edge label extraction
+    with ProcessPoolExecutor(max_workers=num_subprocesses) as executor:
+        futures = [executor.submit(process_files_chunk, chunk) for chunk in file_chunks]
+
+        # Process results as they complete
+        for future in futures:
+            chunk_node_labels, chunk_edge_labels = future.result()
+            node_labels.extend(chunk_node_labels)
+            edge_labels.extend(chunk_edge_labels)
+
+    print('Encoders Completed')
+
+    # Write node and edge encodings to files
+    with open(node_path, 'wb') as f:
+        pickle.dump(list(set(node_labels)), f)
+
+    with open(edge_path, 'wb') as f:
+        pickle.dump(list(set(edge_labels)), f)
+
+    print('Generated Encoder Files')
+
+    return node_labels, edge_labels
+
+
+def fix_function_nodes(graph):
+    for node in graph.nodes(data=True):
+        node_label = node[1].get('label', '')
+        if node_label.startswith('FUNCTION_'):
+            graph.nodes[node[0]]['label'] = 'FUNCTION'
+    return graph
+
+
+def get_graph(file_name):
+    with open(file_name, 'rb') as f:
+        graph = pickle.load(f)
+        return graph

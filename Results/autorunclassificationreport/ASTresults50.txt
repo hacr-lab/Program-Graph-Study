@@ -1,0 +1,25 @@
+Name                            Precision     Recall         F1    Count
+--------------------------------------------------------------------
+ErrorHandlingIssue                   0.41       0.68       0.50    15180
+ResourceManagementIssue              0.60       0.67       0.63    31155
+RaceCondition                        0.45       0.99       0.61      908
+LogicError                           0.52       0.75       0.60    13319
+not-vulnerable                       0.95       0.67       0.78   417948
+CodeQualityIssue                     0.33       0.83       0.47     7109
+InformationExposure                  0.23       0.66       0.31      193
+DangerousFunctionUsage               0.44       0.91       0.55      341
+MemoryCorruption                     0.70       0.74       0.71    74581
+ConcurrencyIssue                     0.36       0.95       0.51     1450
+ArithmeticError                      0.75       0.99       0.85     8673
+ImproperInputValidation              0.78       0.87       0.82    40647
+InsecureResourceManagement           0.26       0.78       0.36     3883
+MaliciousCode                        0.33       0.91       0.47     1552
+IntegerOverflow                      0.77       0.82       0.79    45096
+UninitializedMemoryUse               0.67       0.94       0.78     9221
+IntegerUnderflow                     0.65       0.83       0.72    29731
+BufferOverflow                       0.67       0.83       0.73   102683
+IntegerError                         0.68       0.87       0.76    32530
+
+
+macroavg                             0.55       0.83       0.62   836200
+weightedavg                          0.81       0.74       0.75   836200
